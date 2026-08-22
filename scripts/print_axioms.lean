@@ -13,9 +13,9 @@ lake env lean scripts/print_axioms.lean
 ```
 
 prints the axioms `SRG266.srg266_nonexistence` rests on.  The expected report
-is `[propext, Classical.choice, Quot.sound]` -- the three axioms of Lean's
-classical logic, and nothing else.  In particular `ofReduceBool` must not
-appear: it is what `native_decide` adds, and this development uses
+is `[propext, Classical.choice, Quot.sound]` -- the three standard axioms
+routinely used by Mathlib, and nothing else.  In particular `ofReduceBool`
+must not appear: it is what `native_decide` adds, and this development uses
 `decide +kernel` throughout so that every certificate is replayed by the
 kernel rather than by compiled code.
 

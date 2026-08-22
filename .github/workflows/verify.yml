@@ -1,14 +1,14 @@
 name: verify
 
-# A from-scratch, kernel-only rebuild of the whole proof.
+# A kernel-checked rebuild of all project modules from source.
 #
 # It does not fit in one GitHub-hosted job: the closure is 15,050 modules and
 # about a hundred and forty CPU-hours, three quarters of it in the 1,226
-# residual certificate chains.  So the build is a matrix.  Every job rebuilds its own
-# dependencies from source -- only Mathlib comes prebuilt, from its own cache
-# -- and uploads the oleans it produced.  The final job merges them, assembles
-# the headline theorem and checks which axioms it rests on.  The badge is that
-# final job.
+# residual certificate chains.  So the build is a matrix.  Every job rebuilds
+# its own SRG266 dependencies from source; Mathlib is consumed from the cache
+# for its pinned revision.  Each job uploads the oleans it produced.  The final
+# job merges them, assembles the headline theorem and checks which axioms it
+# rests on.  The badge is that final job.
 
 on:
   # No pull-request trigger: a full verification is twenty-nine jobs and about
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
   schedule:
     # Sunday 02:00 UTC.  Weekly rather than nightly: the proof does not move,
-    # and this re-checks it against whatever the toolchain caches now hold.
+    # and this re-checks the pinned proof on the current GitHub runner image.
     - cron: '0 2 * * 0'
 
 permissions:

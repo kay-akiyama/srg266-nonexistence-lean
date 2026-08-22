@@ -40,5 +40,5 @@ certificates in
 
 The final result is
 [`SRG266.srg266_nonexistence`](../SRG266/FractionalNearFrameMain.lean). Its axiom
-report contains only Lean's standard classical axioms; see
+report contains only the three standard axioms routinely used by Mathlib; see
 [`scripts/print_axioms.lean`](../scripts/print_axioms.lean).

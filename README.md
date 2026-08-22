@@ -14,17 +14,20 @@ theorem SRG266.srg266_nonexistence {V : Type u} [Fintype V]
 The proof fixes a vertex and studies its local Gram lattice. This lattice
 embeds in a positive-definite odd unimodular lattice of rank 15. Splitting off
 norm-one directions and classifying the norm-two root system leaves five host
-cases. Three root-lattice hosts are eliminated by kernel-checked finite
-certificates. The other two cases would produce a quasi-symmetric
-`2-(56, 12, 9)` design with block intersections `0` and `3`.
+cases. The `ℤ¹⁵` and `E₈ ⊕ ℤ⁷` cases are ruled out structurally. The `D₁₂⁺`
+case and two `A₁₅⁺` endpoints give binary weight-three factorizations, which
+would produce a quasi-symmetric `2-(56, 12, 9)` design with block intersections
+`0` and `3`. The `(E₇ ⊕ E₇)⁺` case and the other `A₁₅⁺` endpoints are excluded
+by kernel-checked finite enumeration and exact arithmetic arguments.
 
-Deleting a point from such a design gives a derived `2-(45, 9, 2)` design.
-Its block graph is the triangular graph `T(11)`, so the design can be expressed
-as a cherry cover of `K₁₁`. The induced residual structure yields a finite
-rational feasibility problem. Exact Hall cuts and integer dual certificates,
-checked by Lean, refute every rooted normal form.
+Deleting a point and dualizing the 45 resulting traces gives a
+`2-(45, 9, 2)` design. Its 55-block graph is the triangular graph `T(11)`, so
+the design can be expressed as a cherry cover of `K₁₁`. The induced residual
+structure yields a finite rational feasibility problem. Exact Hall cuts and
+integer dual certificates, checked by Lean, refute every rooted normal form.
 
-The final theorem uses only Lean's classical axioms:
+The final theorem uses only the three standard axioms routinely used by
+Mathlib:
 
 ```text
 'SRG266.srg266_nonexistence' depends on axioms: [propext, Classical.choice, Quot.sound]
@@ -43,10 +46,21 @@ theorem's import closure. Generated certificates are replayed with
 | `SRG266/Hosts/` | finite host eliminations |
 | `SRG266/QuasiSymmetric/` | design reduction and finite obstruction |
 | `SRG266/Certificates/` | kernel-checked certificate data |
+| `scripts/shards.py` | CI sharding and lightweight closure audit |
 | `scripts/print_axioms.lean` | axiom report |
 | `docs/Literature.md` | relation to prior mathematical results |
+| `CITATION.cff` | citation metadata |
 
 ## Verification
+
+The lightweight audit reads the import graph and scans the 15,050-module
+closure without running Lean:
+
+```bash
+python3 scripts/shards.py audit
+```
+
+The complete local rebuild is substantially more expensive:
 
 ```bash
 lake exe cache get
@@ -54,16 +68,33 @@ lake build
 lake env lean scripts/print_axioms.lean
 ```
 
-The full build is large. The CI workflow builds it in shards.
+The full project takes roughly 140 CPU-hours. Individual certificate checks
+can peak near 6 GB of memory, and part of the final assembly can approach
+10 GB. An unrestricted parallel `lake build` may therefore exhaust memory.
+The CI workflow rebuilds all project modules from source against the pinned,
+prebuilt Mathlib cache, distributing the work across 29 jobs before assembling
+the headline theorem and checking its axioms.
+
+The certificate-generation tools and exploratory search artifacts are not part
+of this release. The committed certificates are proof data: their validity is
+replayed by Lean and does not depend on trusting the programs that found them.
+
+## Author and citation
+
+Author and maintainer: Kay Akiyama.
+
+Citation metadata is provided in [`CITATION.cff`](CITATION.cff). GitHub exposes
+it through the repository's **Cite this repository** action.
 
 ## LLM involvement
 
 This project is the result of LLM-led mathematical research and formalization.
-The human contributor supplied the problem and the instruction to solve it;
-LLM agents carried out the mathematical exploration, proof design, Lean
-implementation, certificate construction, debugging, and documentation. The
-result does not rely on trusting those agents: every formal claim is checked by
-the Lean kernel.
+Kay Akiyama supplied the problem and the instruction to solve it; LLM agents
+carried out the mathematical exploration, proof design, Lean implementation,
+certificate construction, debugging, and documentation. The agents are not
+listed as authors. The formal result does not rely on trusting them: the
+complete proof term is checked by the Lean kernel, subject only to the three
+axioms listed above.
 
 ## Licence
 
