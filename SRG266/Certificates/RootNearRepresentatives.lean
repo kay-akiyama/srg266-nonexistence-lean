@@ -1,9 +1,9 @@
 import Mathlib.Data.Nat.Notation
 
 /-
-Copyright (c) 2026.
+Copyright (c) 2026 Kay Akiyama.
 Released under Apache 2.0 license as described in the file LICENSE.
-Authors: SRG266 formalization contributors
+Authors: Kay Akiyama
 -/
 
 /-!
