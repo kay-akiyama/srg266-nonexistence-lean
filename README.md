@@ -74,8 +74,10 @@ The full project takes roughly 140 CPU-hours. Individual certificate checks
 can peak near 6 GB of memory, and part of the final assembly can approach
 10 GB. An unrestricted parallel `lake build` may therefore exhaust memory.
 The CI workflow rebuilds all project modules from source against the pinned,
-prebuilt Mathlib cache, distributing the work across 29 jobs before assembling
-the headline theorem and checking its axioms.
+prebuilt Mathlib cache, distributing the work across 29 jobs. Within each job,
+its dependency-aware scheduler runs two targets concurrently only when their
+unbuilt import closures are disjoint, so shared dependencies are built once.
+The final job then assembles the headline theorem and checks its axioms.
 
 The certificate-generation tools and exploratory search artifacts are not part
 of this release. The committed certificates are proof data: their validity is

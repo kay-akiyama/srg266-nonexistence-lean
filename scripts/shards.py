@@ -10,15 +10,20 @@ hands each job the list of modules it is responsible for.
     python3 scripts/shards.py matrix                # the CI matrix, as JSON
     python3 scripts/shards.py targets subtree 3 20  # one job's module list
     python3 scripts/shards.py targets final         # what the last job builds
+    python3 scripts/shards.py build subtree 3 20    # dependency-safe CI build
     python3 scripts/shards.py audit                 # closure report
 """
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 FINAL_MODULE = "SRG266.FractionalNearFrameMain"
@@ -89,6 +94,26 @@ def closure(module: str = FINAL_MODULE) -> frozenset[str]:
     return frozenset(seen)
 
 
+@functools.cache
+def module_index() -> dict[str, int]:
+    """A stable bit position for every module in the headline closure."""
+    return {module: index for index, module in enumerate(sorted(closure()))}
+
+
+@functools.cache
+def closure_mask(module: str) -> int:
+    """The SRG266 import closure as a compact bit set.
+
+    The scheduler performs thousands of overlap checks.  Python integer bit
+    operations make those checks effectively constant-time, whereas repeatedly
+    subtracting sets of module-name strings adds minutes of planner overhead.
+    """
+    mask = 1 << module_index()[module]
+    for dependency in imports_of(module):
+        mask |= closure_mask(dependency)
+    return mask
+
+
 def family_of(module: str) -> str:
     """Which certificate family a module belongs to, by name alone."""
     if module.startswith(ASSEMBLY):
@@ -145,6 +170,110 @@ def targets(stratum: str, shard: int = 0, of: int = 1) -> list[str]:
     # Round-robin, not contiguous blocks: neighbouring names are the same
     # kind of certificate, and those are not equally expensive.
     return picked[shard::of]
+
+
+def run_lake(target: str) -> int:
+    """Build one target, inheriting the job's stdout, stderr and environment."""
+    return subprocess.run(["lake", "build", target], check=False).returncode
+
+
+def build_shard(stratum: str, shard: int, of: int, parallel: int,
+                runner: Callable[[str], int] = run_lake) -> int:
+    """Build a shard without concurrent writes to shared dependencies.
+
+    A successful `lake build M` has built the whole Lean import closure of `M`.
+    While it is running, no other target whose still-unbuilt closure overlaps
+    that closure may start.  Once it completes, those dependencies become
+    read-only inputs and independent targets can run alongside one another.
+
+    This retains two-way parallelism for the expensive independent certificate
+    leaves, but builds each shared base only once.  It also skips a listed
+    target if an earlier target already built it as a dependency.
+    """
+    if parallel < 1:
+        raise SystemExit(f"PARALLEL must be positive, got {parallel}")
+    goals = targets(stratum, shard, of)
+    pending = goals.copy()
+    total = len(goals)
+    built = 0
+    started = 0
+    skipped = 0
+
+    print(f"{total} targets; dependency-safe parallelism {parallel}", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+        running: dict[concurrent.futures.Future[int],
+                      tuple[str, int]] = {}
+        while pending or running:
+            # Importers can make a module listed later in the plan redundant.
+            still_pending: list[str] = []
+            for target in pending:
+                if built & (1 << module_index()[target]):
+                    skipped += 1
+                else:
+                    still_pending.append(target)
+            pending = still_pending
+
+            claimed = 0
+            for _, remaining in running.values():
+                claimed |= remaining
+            while pending and len(running) < parallel:
+                choice = None
+                for index, target in enumerate(pending):
+                    remaining = closure_mask(target) & ~built
+                    if not (remaining & claimed):
+                        choice = (index, target, remaining)
+                        break
+                if choice is None:
+                    break
+                index, target, remaining = choice
+                pending.pop(index)
+                claimed |= remaining
+                started += 1
+                print(f"[{started}/{total}] start {target}", flush=True)
+                future = pool.submit(runner, target)
+                running[future] = (target, remaining)
+
+            if not running:
+                raise RuntimeError("scheduler deadlock with pending targets")
+
+            done, _ = concurrent.futures.wait(
+                running, return_when=concurrent.futures.FIRST_COMPLETED)
+            failures: list[str] = []
+            for future in done:
+                target, _ = running.pop(future)
+                if future.result() == 0:
+                    built |= closure_mask(target)
+                    print(f"done {target}", flush=True)
+                else:
+                    failures.append(target)
+
+            if failures:
+                # Stop scheduling, let disjoint in-flight work finish, then
+                # retry failures without any concurrent Lake process.  A
+                # repeated failure remains a genuine CI failure.
+                for future, (target, _) in list(running.items()):
+                    if future.result() == 0:
+                        built |= closure_mask(target)
+                        print(f"done {target}", flush=True)
+                    else:
+                        failures.append(target)
+                running.clear()
+                for target in failures:
+                    print(f"::warning::Retrying {target} serially", flush=True)
+                    if runner(target) != 0:
+                        return 1
+                    built |= closure_mask(target)
+                    print(f"done {target} (serial retry)", flush=True)
+
+    required = 0
+    for target in goals:
+        required |= closure_mask(target)
+    if required & ~built:
+        raise RuntimeError(
+            "scheduler completed without building the whole shard closure")
+    print(f"built {started} targets; skipped {skipped} already-built targets",
+          flush=True)
+    return 0
 
 
 def strip_comments(text: str) -> str:
@@ -212,6 +341,11 @@ def main(argv: list[str]) -> int:
         of = int(argv[4]) if len(argv) > 4 else 1
         print("\n".join(targets(argv[2], shard, of)))
         return 0
+    if command == "build" and len(argv) >= 3:
+        shard = int(argv[3]) if len(argv) > 3 else 0
+        of = int(argv[4]) if len(argv) > 4 else 1
+        parallel = int(os.environ.get("PARALLEL", "2"))
+        return build_shard(argv[2], shard, of, parallel)
     if command == "audit":
         return audit()
     print(__doc__, file=sys.stderr)

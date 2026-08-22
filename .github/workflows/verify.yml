@@ -32,10 +32,10 @@ concurrency:
 env:
   # `decide +kernel` on these certificates peaks near 6 GB in a single
   # process, and a GitHub runner has 16 GB, so two at a time is the budget.
-  # `LEAN_NUM_THREADS=1` is what makes one `lake build` mean one `lean`:
-  # raising it multiplies Lake's job count faster than the value itself --
-  # at 2, four `lean` processes ran at once -- and Lake has no `--jobs`.
-  # Hence one invocation per module, `PARALLEL` of them under `xargs`.
+  # `LEAN_NUM_THREADS=1` is what makes one `lake build` mean one `lean`.
+  # `shards.py build` runs at most `PARALLEL` Lake processes, and only when
+  # their still-unbuilt import closures are disjoint.  Shared dependencies are
+  # therefore built once rather than raced by independent Lake processes.
   LEAN_NUM_THREADS: '1'
   PARALLEL: '2'
 
@@ -75,21 +75,9 @@ jobs:
         run: lake exe cache get
 
       - name: Build this shard
-        run: |
-          python3 scripts/shards.py targets \
-            "${{ matrix.stratum }}" "${{ matrix.shard }}" "${{ matrix.of }}" > targets.txt
-          echo "$(wc -l < targets.txt) targets"
-          # One `lake build` per module, $PARALLEL of them at a time.  Lake
-          # has no job-count flag, so handing it the whole list at once is the
-          # one thing that reliably overshoots the runner's memory.
-          # Separate Lake processes can occasionally race while writing a
-          # shared dependency.  Once the parallel pass has populated the
-          # build directory, a serial retry is cheap and turns that transient
-          # condition into success while preserving genuine failures.
-          if ! xargs -a targets.txt -n 1 -P "$PARALLEL" lake build; then
-            echo "::warning::Parallel build reported a failure; retrying serially"
-            xargs -a targets.txt -n 1 -P 1 lake build
-          fi
+        run: >-
+          python3 scripts/shards.py build
+          "${{ matrix.stratum }}" "${{ matrix.shard }}" "${{ matrix.of }}"
 
       - name: Pack the oleans
         run: |
