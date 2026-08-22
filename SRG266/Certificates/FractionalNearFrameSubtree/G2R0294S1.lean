@@ -1,0 +1,43 @@
+import SRG266.Certificates.FractionalNearFrameSubtree.G2R0294S0
+/-
+Copyright (c) 2026.
+Released under Apache 2.0 license as described in the file LICENSE.
+Authors: SRG266 formalization contributors
+-/
+
+/-!
+# Empty-endpoint subtree shards 1 for `G2R0294`
+-/
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+namespace SRG266.Certificates
+
+open SRG266.QuasiSymmetric
+
+theorem fractionalNearFrameSubtreeG2R0294_s0048 :
+    CompactShellSubtreeLowerBoundOn fractionalNearFrameSubtreeG2R0294Mask fractionalNearFrameSubtreeG2R0294Witness
+      (fractionalNearFrameSubtreeG2R0294Endpoint 0)
+      (((compactShellRootChildren fractionalNearFrameSubtreeG2R0294Mask (fractionalNearFrameSubtreeG2R0294Endpoint 0)).drop 48).take 12)
+      (8) := by
+  apply compactShellSubtreeLowerBoundOn_of_audit
+  decide +kernel
+
+theorem fractionalNearFrameSubtreeG2R0294_s0060 :
+    CompactShellSubtreeLowerBoundOn fractionalNearFrameSubtreeG2R0294Mask fractionalNearFrameSubtreeG2R0294Witness
+      (fractionalNearFrameSubtreeG2R0294Endpoint 0)
+      (((compactShellRootChildren fractionalNearFrameSubtreeG2R0294Mask (fractionalNearFrameSubtreeG2R0294Endpoint 0)).drop 60).take 12)
+      (8) := by
+  apply compactShellSubtreeLowerBoundOn_of_audit
+  decide +kernel
+
+theorem fractionalNearFrameSubtreeG2R0294_s0072 :
+    CompactShellSubtreeLowerBoundOn fractionalNearFrameSubtreeG2R0294Mask fractionalNearFrameSubtreeG2R0294Witness
+      (fractionalNearFrameSubtreeG2R0294Endpoint 0)
+      (((compactShellRootChildren fractionalNearFrameSubtreeG2R0294Mask (fractionalNearFrameSubtreeG2R0294Endpoint 0)).drop 72).take 12)
+      (8) := by
+  apply compactShellSubtreeLowerBoundOn_of_audit
+  decide +kernel
+
+end SRG266.Certificates

@@ -1,0 +1,12 @@
+/.lake/
+/.toolchains/
+/.venv/
+/build/
+__pycache__/
+*.pyc
+*.olean
+*.ilean
+*.c
+.DS_Store
+/.idea/
+/.vscode/

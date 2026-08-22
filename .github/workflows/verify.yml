@@ -1,0 +1,183 @@
+name: verify
+
+# A from-scratch, kernel-only rebuild of the whole proof.
+#
+# It does not fit in one GitHub-hosted job: the closure is 15,050 modules and
+# about a hundred and forty CPU-hours, three quarters of it in the 1,226
+# residual certificate chains.  So the build is a matrix.  Every job rebuilds its own
+# dependencies from source -- only Mathlib comes prebuilt, from its own cache
+# -- and uploads the oleans it produced.  The final job merges them, assembles
+# the headline theorem and checks which axioms it rests on.  The badge is that
+# final job.
+
+on:
+  # No pull-request trigger: a full verification is twenty-nine jobs and about
+  # a hundred and forty CPU-hours, which is not a proportionate response to a
+  # proposed change.  Run it by hand with `workflow_dispatch` when one lands.
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Sunday 02:00 UTC.  Weekly rather than nightly: the proof does not move,
+    # and this re-checks it against whatever the toolchain caches now hold.
+    - cron: '0 2 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # `decide +kernel` on these certificates peaks near 6 GB in a single
+  # process, and a GitHub runner has 16 GB, so two at a time is the budget.
+  # `LEAN_NUM_THREADS=1` is what makes one `lake build` mean one `lean`:
+  # raising it multiplies Lake's job count faster than the value itself --
+  # at 2, four `lean` processes ran at once -- and Lake has no `--jobs`.
+  # Hence one invocation per module, `PARALLEL` of them under `xargs`.
+  LEAN_NUM_THREADS: '1'
+  PARALLEL: '2'
+
+jobs:
+  plan:
+    name: Plan the matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: echo "matrix=$(python3 scripts/shards.py matrix)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.stratum }} ${{ matrix.shard }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the Mathlib oleans
+        run: lake exe cache get
+
+      - name: Build this shard
+        run: |
+          python3 scripts/shards.py targets \
+            "${{ matrix.stratum }}" "${{ matrix.shard }}" "${{ matrix.of }}" > targets.txt
+          echo "$(wc -l < targets.txt) targets"
+          # One `lake build` per module, $PARALLEL of them at a time.  Lake
+          # has no job-count flag, so handing it the whole list at once is the
+          # one thing that reliably overshoots the runner's memory.
+          xargs -a targets.txt -n 1 -P "$PARALLEL" lake build
+
+      - name: Pack the oleans
+        run: |
+          # The generated C is several GB and nothing downstream reads it.
+          rm -rf .lake/build/ir
+          tar -C .lake/build/lib/lean -c SRG266 | zstd -9 -T0 -o oleans.tar.zst
+          ls -lh oleans.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oleans-${{ matrix.stratum }}-${{ matrix.shard }}
+          path: oleans.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+  verify:
+    name: Assemble and check the axioms
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room for the merged build
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the Mathlib oleans
+        run: lake exe cache get
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: oleans-*
+          path: shards
+
+      # From here on the proof is elaborated by `lean` directly rather than by
+      # `lake build`.  Lake treats a module as stale unless the C file it
+      # emits alongside the olean is present, and the shards deliberately did
+      # not ship several gigabytes of generated C; asking Lake to build would
+      # rebuild the entire proof in this one job.
+      - name: Merge the shard oleans
+        run: |
+          mkdir -p .lake/build/lib/lean
+          # Lean's output is reproducible, so where two shards rebuilt the
+          # same dependency they wrote the same bytes and overwriting is
+          # harmless.  Each archive is deleted as it is unpacked, to keep the
+          # peak disk use at one copy.
+          for archive in shards/*/oleans.tar.zst; do
+            zstd -dc "$archive" | tar -C .lake/build/lib/lean -x
+            rm "$archive"
+          done
+          echo "$(find .lake/build/lib/lean/SRG266 -name '*.olean' | wc -l) oleans merged"
+
+      - name: Point lean at Mathlib and at the merged build
+        run: |
+          deps="$(ls -d .lake/packages/*/.lake/build/lib/lean | tr '\n' ':')"
+          echo "LEAN_PATH=${deps}.lake/build/lib/lean" >> "$GITHUB_ENV"
+
+      - name: Assemble the final theorem
+        run: |
+          # The dispatchers, the assembly, and the coverage modules where the
+          # two halves of the argument meet: they import across strata, so no
+          # shard could produce them, and they are cheap now that everything
+          # they need is in place.  `shards.py` lists them in dependency
+          # order, and they are elaborated one at a time: the group-4 Hall
+          # dispatcher replays 366 masks in a single kernel declaration and
+          # peaks near 10 GB.
+          python3 scripts/shards.py targets final | while read -r module; do
+            olean=".lake/build/lib/lean/${module//.//}.olean"
+            mkdir -p "$(dirname "$olean")"
+            echo "  $module"
+            lean "${module//.//}.lean" -o "$olean"
+          done
+
+      - name: The theorem rests on exactly the three standard axioms
+        run: |
+          lean scripts/print_axioms.lean | tee axioms.txt
+          python3 - <<'PY'
+          import re
+          import sys
+
+          report = open("axioms.txt").read()
+          line = re.search(
+              r"'SRG266\.srg266_nonexistence' depends on axioms: \[([^\]]*)\]", report)
+          if line is None:
+              sys.exit(f"no axiom report for the headline theorem:\n{report}")
+          found = {axiom.strip() for axiom in line.group(1).split(",")}
+          if found != {"propext", "Classical.choice", "Quot.sound"}:
+              sys.exit(f"unexpected axioms {sorted(found)} in:\n{report}")
+          print("srg266_nonexistence rests on propext, Classical.choice, Quot.sound")
+          PY
+
+      - name: No compiled evaluation anywhere in the closure
+        run: python3 scripts/shards.py audit
