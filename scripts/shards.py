@@ -62,6 +62,7 @@ BANNED = {
 }
 
 IMPORT_RE = re.compile(r"^import\s+([A-Za-z0-9_.]+)", re.M)
+INCLUDE_STR_RE = re.compile(r'\binclude_str\s+"([^"\n]+)"')
 BLOCK_COMMENT_RE = re.compile(r"/-.*?-/", re.S)
 LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 
@@ -164,19 +165,35 @@ def audit() -> int:
     for stratum, count in sorted(counts.items()):
         print(f"  {stratum:8s} {count}")
     offenders: dict[str, list[str]] = {}
+    missing_includes: list[tuple[str, str]] = []
     for module in sorted(modules):
-        code = strip_comments(source(module).read_text())
+        module_source = source(module)
+        code = strip_comments(module_source.read_text())
         for name, pattern in BANNED.items():
             if pattern.search(code):
                 offenders.setdefault(name, []).append(module)
-    if not offenders:
+        for relative in INCLUDE_STR_RE.findall(code):
+            included = (module_source.parent / relative).resolve()
+            try:
+                included.relative_to(ROOT.resolve())
+            except ValueError:
+                missing_includes.append((module, relative))
+                continue
+            if not included.is_file():
+                missing_includes.append((module, relative))
+    if not offenders and not missing_includes:
         print("no native_decide, ofReduceBool, sorry, Float, "
               "@[implemented_by] or @[extern] in the closure")
+        print("all include_str inputs are present inside the repository")
         return 0
     for name, hits in sorted(offenders.items()):
         print(f"{name}: {len(hits)} modules")
         for module in hits[:10]:
             print(f"    {module}")
+    if missing_includes:
+        print(f"missing or external include_str inputs: {len(missing_includes)}")
+        for module, relative in missing_includes[:10]:
+            print(f"    {module}: {relative}")
     return 1
 
 

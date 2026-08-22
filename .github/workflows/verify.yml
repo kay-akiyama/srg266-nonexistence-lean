@@ -47,6 +47,8 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+      - name: Audit the source snapshot
+        run: python3 scripts/shards.py audit
       - id: plan
         run: echo "matrix=$(python3 scripts/shards.py matrix)" >> "$GITHUB_OUTPUT"
 
@@ -80,7 +82,14 @@ jobs:
           # One `lake build` per module, $PARALLEL of them at a time.  Lake
           # has no job-count flag, so handing it the whole list at once is the
           # one thing that reliably overshoots the runner's memory.
-          xargs -a targets.txt -n 1 -P "$PARALLEL" lake build
+          # Separate Lake processes can occasionally race while writing a
+          # shared dependency.  Once the parallel pass has populated the
+          # build directory, a serial retry is cheap and turns that transient
+          # condition into success while preserving genuine failures.
+          if ! xargs -a targets.txt -n 1 -P "$PARALLEL" lake build; then
+            echo "::warning::Parallel build reported a failure; retrying serially"
+            xargs -a targets.txt -n 1 -P 1 lake build
+          fi
 
       - name: Pack the oleans
         run: |

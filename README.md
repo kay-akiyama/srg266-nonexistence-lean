@@ -46,6 +46,7 @@ theorem's import closure. Generated certificates are replayed with
 | `SRG266/Hosts/` | finite host eliminations |
 | `SRG266/QuasiSymmetric/` | design reduction and finite obstruction |
 | `SRG266/Certificates/` | kernel-checked certificate data |
+| `certificates/root_cubic_prefix/` | LRAT traces consumed by the cubic-prefix certificate modules |
 | `scripts/shards.py` | CI sharding and lightweight closure audit |
 | `scripts/print_axioms.lean` | axiom report |
 | `docs/Literature.md` | relation to prior mathematical results |
@@ -53,8 +54,9 @@ theorem's import closure. Generated certificates are replayed with
 
 ## Verification
 
-The lightweight audit reads the import graph and scans the 15,050-module
-closure without running Lean:
+The lightweight audit reads the import graph, scans the 15,050-module closure,
+and checks that every `include_str` input is present inside the repository,
+without running Lean:
 
 ```bash
 python3 scripts/shards.py audit
