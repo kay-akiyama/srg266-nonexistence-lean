@@ -8,7 +8,7 @@ strongly regular with parameters `(266, 45, 0, 9)`.
 
 ```lean
 theorem SRG266.srg266_nonexistence {V : Type u} [Fintype V]
-    (G : SimpleGraph V) [DecidableRel G.Adj] : ¬ SRG266.IsHypothetical G
+    (G : SimpleGraph V) [DecidableRel G.Adj] : ¬ G.IsSRGWith 266 45 0 9
 ```
 
 The proof fixes a vertex and studies its local Gram lattice. This lattice

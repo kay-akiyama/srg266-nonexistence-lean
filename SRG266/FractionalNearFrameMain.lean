@@ -21,7 +21,7 @@ universe u
 theorem srg266_nonexistence
     {V : Type u} [Fintype V]
     (G : SimpleGraph V) [DecidableRel G.Adj] :
-    ¬ IsHypothetical G :=
+    ¬ G.IsSRGWith 266 45 0 9 :=
   srg266_nonexistence_of_noResidualCherryCover
     QuasiSymmetric.noResidualCherryCover_holds G
 
