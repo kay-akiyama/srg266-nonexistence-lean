@@ -5,8 +5,8 @@ type: software
 authors:
   - family-names: "Akiyama"
     given-names: "Kay"
-version: 1.0.0
-date-released: 2026-08-23
+version: 1.1.0
+date-released: 2026-08-25
 repository-code: "https://github.com/kay-akiyama/srg266-nonexistence-lean"
 license: Apache-2.0
 keywords:
