@@ -4,17 +4,17 @@ name: verify
 #
 # It does not fit in one GitHub-hosted job: the closure is 15,050 modules and
 # about a hundred and forty CPU-hours, three quarters of it in the 1,226
-# residual certificate chains.  So the build is a matrix.  Every job rebuilds
-# its own SRG266 dependencies from source; Mathlib is consumed from the cache
-# for its pinned revision.  Each job uploads the oleans it produced.  The final
-# job merges them, assembles the headline theorem and checks which axioms it
-# rests on.  It then packages the complete project olean closure for fast
+# residual certificate chains.  Twenty balanced base jobs rebuild 14,711
+# modules from source.  A second matrix consumes those oleans and elaborates
+# the 43 independent Hall dispatchers plus the 275 independent side modules.
+# The final job then has only a 21-module dependent tail to assemble before it
+# checks the axioms and packages the complete project olean closure for fast
 # kernel replay.  A manual release run can attach that bundle to an existing
 # GitHub Release after every verification step has succeeded.
 
 on:
-  # A full verification is twenty-nine jobs and about a hundred and forty
-  # CPU-hours, so it is deliberately launched only by a maintainer.
+  # A full verification is about a hundred and forty CPU-hours spread over
+  # staged matrices, so it is deliberately launched only by a maintainer.
   workflow_dispatch:
     inputs:
       source_ref:
@@ -39,9 +39,9 @@ env:
   # `decide +kernel` on these certificates peaks near 6 GB in a single
   # process, and a GitHub runner has 16 GB, so two at a time is the budget.
   # `LEAN_NUM_THREADS=1` is what makes one `lake build` mean one `lean`.
-  # `shards.py build` runs at most `PARALLEL` Lake processes, and only when
-  # their still-unbuilt import closures are disjoint.  Shared dependencies are
-  # therefore built once rather than raced by independent Lake processes.
+  # `shards.py build-base` runs at most `PARALLEL` Lake processes, and only
+  # when their still-unbuilt import closures are disjoint.  Shared dependencies
+  # are therefore built once rather than raced by independent Lake processes.
   LEAN_NUM_THREADS: '1'
   PARALLEL: '2'
 
@@ -50,8 +50,12 @@ jobs:
     name: Plan the matrix
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      base_matrix: ${{ steps.plan.outputs.base_matrix }}
+      base_count: ${{ steps.plan.outputs.base_count }}
+      fanout_matrix: ${{ steps.plan.outputs.fanout_matrix }}
+      pretail_count: ${{ steps.plan.outputs.pretail_count }}
       source_sha: ${{ steps.source.outputs.sha }}
+      total_count: ${{ steps.plan.outputs.total_count }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -76,17 +80,22 @@ jobs:
       - name: Audit the source snapshot
         run: python3 scripts/shards.py audit
       - id: plan
-        run: echo "matrix=$(python3 scripts/shards.py matrix)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "base_matrix=$(python3 scripts/shards.py matrix base)" >> "$GITHUB_OUTPUT"
+          echo "base_count=$(python3 scripts/shards.py count base)" >> "$GITHUB_OUTPUT"
+          echo "fanout_matrix=$(python3 scripts/shards.py matrix fanout)" >> "$GITHUB_OUTPUT"
+          echo "pretail_count=$(python3 scripts/shards.py count pretail)" >> "$GITHUB_OUTPUT"
+          echo "total_count=$(python3 scripts/shards.py count total)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: ${{ matrix.stratum }} ${{ matrix.shard }}
+    name: base ${{ matrix.label }}
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+        include: ${{ fromJSON(needs.plan.outputs.base_matrix) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -103,9 +112,7 @@ jobs:
         run: lake exe cache get
 
       - name: Build this shard
-        run: >-
-          python3 scripts/shards.py build
-          "${{ matrix.stratum }}" "${{ matrix.shard }}" "${{ matrix.of }}"
+        run: python3 scripts/shards.py build-base "${{ matrix.job }}"
 
       - name: Pack the oleans
         run: |
@@ -116,16 +123,88 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: oleans-${{ matrix.stratum }}-${{ matrix.shard }}
+          name: oleans-base-${{ matrix.job }}
+          path: oleans.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+  fanout:
+    name: fanout ${{ matrix.label }}
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.fanout_matrix) }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+
+      - name: Make room for the merged base
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the Mathlib oleans
+        run: lake exe cache get
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: oleans-base-*
+          path: base-shards
+
+      - name: Merge the base oleans
+        env:
+          EXPECTED_BASE: ${{ needs.plan.outputs.base_count }}
+        run: |
+          mkdir -p .lake/base/lib/lean
+          for archive in base-shards/*/oleans.tar.zst; do
+            zstd -dc "$archive" | tar -C .lake/base/lib/lean -x
+            rm "$archive"
+          done
+          count="$(find .lake/base/lib/lean/SRG266 -name '*.olean' | wc -l)"
+          if [[ "$count" -ne "$EXPECTED_BASE" ]]; then
+            echo "expected $EXPECTED_BASE base oleans, found $count" >&2
+            exit 1
+          fi
+
+      - name: Point lean at Mathlib, the base, and this fan-out
+        run: |
+          deps="$(ls -d .lake/packages/*/.lake/build/lib/lean | tr '\n' ':')"
+          echo "LEAN_PATH=${deps}.lake/base/lib/lean:.lake/fanout/lib/lean" >> "$GITHUB_ENV"
+
+      - name: Build this fan-out shard
+        env:
+          OLEAN_OUT: .lake/fanout/lib/lean
+        run: >-
+          python3 scripts/shards.py build-direct fanout
+          "${{ matrix.kind }}" "${{ matrix.shard }}"
+
+      - name: Pack the fan-out oleans
+        run: |
+          tar -C .lake/fanout/lib/lean -c SRG266 \
+            | zstd -9 -T0 -o oleans.tar.zst
+          ls -lh oleans.tar.zst
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oleans-fanout-${{ matrix.kind }}-${{ matrix.shard }}
           path: oleans.tar.zst
           retention-days: 1
           compression-level: 0
 
   verify:
     name: Assemble and check the axioms
-    needs: [plan, build]
+    needs: [plan, build, fanout]
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v7
@@ -146,47 +225,48 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: oleans-*
-          path: shards
+          pattern: oleans-base-*
+          path: base-shards
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: oleans-fanout-*
+          path: fanout-shards
 
       # From here on the proof is elaborated by `lean` directly rather than by
       # `lake build`.  Lake treats a module as stale unless the C file it
       # emits alongside the olean is present, and the shards deliberately did
       # not ship several gigabytes of generated C; asking Lake to build would
       # rebuild the entire proof in this one job.
-      - name: Merge the shard oleans
+      - name: Merge the base and fan-out oleans
+        env:
+          EXPECTED_PRETAIL: ${{ needs.plan.outputs.pretail_count }}
         run: |
           mkdir -p .lake/build/lib/lean
-          # Lean's output is reproducible, so where two shards rebuilt the
-          # same dependency they wrote the same bytes and overwriting is
-          # harmless.  Each archive is deleted as it is unpacked, to keep the
-          # peak disk use at one copy.
-          for archive in shards/*/oleans.tar.zst; do
-            zstd -dc "$archive" | tar -C .lake/build/lib/lean -x
-            rm "$archive"
+          # Base jobs can share dependencies; Lean's output is reproducible,
+          # so overwriting those identical oleans is harmless.  Delete each
+          # archive after extraction to keep the peak disk use down.
+          for directory in base-shards fanout-shards; do
+            for archive in "$directory"/*/oleans.tar.zst; do
+              zstd -dc "$archive" | tar -C .lake/build/lib/lean -x
+              rm "$archive"
+            done
           done
-          echo "$(find .lake/build/lib/lean/SRG266 -name '*.olean' | wc -l) oleans merged"
+          count="$(find .lake/build/lib/lean/SRG266 -name '*.olean' | wc -l)"
+          if [[ "$count" -ne "$EXPECTED_PRETAIL" ]]; then
+            echo "expected $EXPECTED_PRETAIL pre-tail oleans, found $count" >&2
+            exit 1
+          fi
 
       - name: Point lean at Mathlib and at the merged build
         run: |
           deps="$(ls -d .lake/packages/*/.lake/build/lib/lean | tr '\n' ':')"
           echo "LEAN_PATH=${deps}.lake/build/lib/lean" >> "$GITHUB_ENV"
 
-      - name: Assemble the final theorem
-        run: |
-          # The dispatchers, the assembly, and the coverage modules where the
-          # two halves of the argument meet: they import across strata, so no
-          # shard could produce them, and they are cheap now that everything
-          # they need is in place.  `shards.py` lists them in dependency
-          # order, and they are elaborated one at a time: the group-4 Hall
-          # dispatcher replays 366 masks in a single kernel declaration and
-          # peaks near 10 GB.
-          python3 scripts/shards.py targets final | while read -r module; do
-            olean=".lake/build/lib/lean/${module//.//}.olean"
-            mkdir -p "$(dirname "$olean")"
-            echo "  $module"
-            lean "${module//.//}.lean" -o "$olean"
-          done
+      - name: Assemble the final dependent tail
+        env:
+          OLEAN_OUT: .lake/build/lib/lean
+        run: python3 scripts/shards.py build-direct tail
 
       - name: The theorem rests on exactly the three standard axioms
         run: |
@@ -211,12 +291,13 @@ jobs:
 
       - name: Package the verified olean closure
         env:
+          EXPECTED_TOTAL: ${{ needs.plan.outputs.total_count }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: |
           module_count="$(find .lake/build/lib/lean/SRG266 -type f -name '*.olean' | wc -l)"
-          if [[ "$module_count" -ne 15050 ]]; then
-            echo "expected 15050 project oleans, found $module_count" >&2
+          if [[ "$module_count" -ne "$EXPECTED_TOTAL" ]]; then
+            echo "expected $EXPECTED_TOTAL project oleans, found $module_count" >&2
             exit 1
           fi
 
