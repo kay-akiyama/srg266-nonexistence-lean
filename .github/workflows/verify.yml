@@ -8,25 +8,31 @@ name: verify
 # its own SRG266 dependencies from source; Mathlib is consumed from the cache
 # for its pinned revision.  Each job uploads the oleans it produced.  The final
 # job merges them, assembles the headline theorem and checks which axioms it
-# rests on.  The badge is that final job.
+# rests on.  It then packages the complete project olean closure for fast
+# kernel replay.  A manual release run can attach that bundle to an existing
+# GitHub Release after every verification step has succeeded.
 
 on:
-  # No pull-request trigger: a full verification is twenty-nine jobs and about
-  # a hundred and forty CPU-hours, which is not a proportionate response to a
-  # proposed change.  Run it by hand with `workflow_dispatch` when one lands.
-  push:
-    branches: [main]
+  # A full verification is twenty-nine jobs and about a hundred and forty
+  # CPU-hours, so it is deliberately launched only by a maintainer.
   workflow_dispatch:
-  schedule:
-    # Sunday 02:00 UTC.  Weekly rather than nightly: the proof does not move,
-    # and this re-checks the pinned proof on the current GitHub runner image.
-    - cron: '0 2 * * 0'
+    inputs:
+      source_ref:
+        description: Git branch, tag, or commit to verify
+        required: true
+        default: main
+        type: string
+      release_tag:
+        description: Existing Release tag to receive the olean bundle (optional; must equal source_ref)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.ref }}
+  group: verify-${{ inputs.source_ref }}
   cancel-in-progress: true
 
 env:
@@ -45,8 +51,30 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - id: source
+        name: Freeze the source revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Validate the optional Release target
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_tag must be a semantic-version tag such as v1.1.0" >&2
+            exit 1
+          fi
+          if [[ "$SOURCE_REF" != "$RELEASE_TAG" ]]; then
+            echo "source_ref and release_tag must be identical for a release build" >&2
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
       - name: Audit the source snapshot
         run: python3 scripts/shards.py audit
       - id: plan
@@ -63,7 +91,9 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
 
       - name: Install elan
         run: |
@@ -86,7 +116,7 @@ jobs:
           tar -C .lake/build/lib/lean -c SRG266 | zstd -9 -T0 -o oleans.tar.zst
           ls -lh oleans.tar.zst
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: oleans-${{ matrix.stratum }}-${{ matrix.shard }}
           path: oleans.tar.zst
@@ -95,12 +125,14 @@ jobs:
 
   verify:
     name: Assemble and check the axioms
-    needs: build
+    needs: [plan, build]
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
 
       - name: Make room for the merged build
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -114,7 +146,7 @@ jobs:
       - name: Fetch the Mathlib oleans
         run: lake exe cache get
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: oleans-*
           path: shards
@@ -178,3 +210,103 @@ jobs:
 
       - name: No compiled evaluation anywhere in the closure
         run: python3 scripts/shards.py audit
+
+      - name: Package the verified olean closure
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        run: |
+          module_count="$(find .lake/build/lib/lean/SRG266 -type f -name '*.olean' | wc -l)"
+          if [[ "$module_count" -ne 15050 ]]; then
+            echo "expected 15050 project oleans, found $module_count" >&2
+            exit 1
+          fi
+
+          # Only oleans are needed by `leanchecker`; do not publish editor or
+          # native-code byproducts under the name of a replay bundle.
+          find .lake/build/lib/lean/SRG266 -type f ! -name '*.olean' -delete
+
+          toolchain="$(tr -d '\r\n' < lean-toolchain)"
+          lean_version="${toolchain##*:v}"
+          label="${RELEASE_TAG:-${SOURCE_SHA:0:12}}"
+          archive="srg266-${label}-lean${lean_version}-oleans.tar.zst"
+          mkdir -p dist
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -C .lake/build/lib/lean -c SRG266 \
+            | zstd -9 -T0 -o "dist/$archive"
+
+          archive_size="$(stat --format=%s "dist/$archive")"
+          if (( archive_size >= 2147483648 )); then
+            echo "the Release asset is $archive_size bytes; split it below GitHub's 2 GiB limit" >&2
+            exit 1
+          fi
+
+          archive_sha="$(sha256sum "dist/$archive" | cut -d' ' -f1)"
+          manifest_sha="$(sha256sum lake-manifest.json | cut -d' ' -f1)"
+          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' lakefile.toml)"
+          jq -n \
+            --arg archive "$archive" \
+            --arg archive_sha256 "$archive_sha" \
+            --arg lean_toolchain "$toolchain" \
+            --arg lake_manifest_sha256 "$manifest_sha" \
+            --arg package_version "$package_version" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg source_commit "$SOURCE_SHA" \
+            --arg workflow_run "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --argjson module_count "$module_count" \
+            '{
+              archive: $archive,
+              archive_sha256: $archive_sha256,
+              kind: "prebuilt Lean olean environment for kernel replay",
+              lake_manifest_sha256: $lake_manifest_sha256,
+              lean_toolchain: $lean_toolchain,
+              module_count: $module_count,
+              package_version: $package_version,
+              release_tag: (if $release_tag == "" then null else $release_tag end),
+              source_commit: $source_commit,
+              workflow_run: $workflow_run
+            }' > dist/srg266-olean-manifest.json
+          printf '%s  %s\n' "$archive_sha" "$archive" > "dist/$archive.sha256"
+          ls -lh dist
+
+      - name: Preserve the replay bundle as a workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: srg266-prebuilt-oleans-${{ needs.plan.outputs.source_sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  publish:
+    name: Attach the replay bundle to the Release
+    if: ${{ inputs.release_tag != '' }}
+    needs: [plan, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Confirm that the Release tag is the verified commit
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "Release tag resolved to $actual, but the verified commit was $SOURCE_SHA" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          name: srg266-prebuilt-oleans-${{ needs.plan.outputs.source_sha }}
+          path: dist
+      - name: Upload the public Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
