@@ -62,7 +62,29 @@ without running Lean:
 python3 scripts/shards.py audit
 ```
 
-The complete local rebuild is substantially more expensive:
+Release `v1.1.0` also provides the complete project olean closure produced by
+the successful source build.  After checking out that tag, it can be replayed
+through a fresh Lean kernel environment without repeating source elaboration:
+
+```bash
+lake exe cache get
+archive=srg266-v1.1.0-lean4.32.2-oleans.tar.zst
+release=https://github.com/kay-akiyama/srg266-nonexistence-lean/releases/download/v1.1.0
+curl -LO "$release/$archive"
+curl -LO "$release/$archive.sha256"
+sha256sum --check "$archive.sha256"
+mkdir -p .lake/build/lib/lean
+zstd -dc "$archive" | tar -C .lake/build/lib/lean -x
+lake env leanchecker --fresh SRG266.FractionalNearFrameMain
+lake env lean scripts/print_axioms.lean
+```
+
+The accompanying `srg266-olean-manifest.json` records the source commit,
+toolchain, Lake manifest hash, module count, producing workflow, and archive
+digest.  `leanchecker --fresh` replays every declaration in the imported
+environment through the Lean kernel; it does not re-elaborate the tagged
+source files.  A full source-to-proof reproduction therefore uses the more
+expensive clean build:
 
 ```bash
 lake exe cache get
@@ -73,11 +95,18 @@ lake env lean scripts/print_axioms.lean
 The full project takes roughly 140 CPU-hours. Individual certificate checks
 can peak near 6 GB of memory, and part of the final assembly can approach
 10 GB. An unrestricted parallel `lake build` may therefore exhaust memory.
-The CI workflow rebuilds all project modules from source against the pinned,
-prebuilt Mathlib cache, distributing the work across 29 jobs. Within each job,
-its dependency-aware scheduler runs two targets concurrently only when their
-unbuilt import closures are disjoint, so shared dependencies are built once.
-The final job then assembles the headline theorem and checks its axioms.
+The manually dispatched CI workflow rebuilds all project modules from source
+against the pinned, prebuilt Mathlib cache, distributing the work across 29
+jobs. Within each job, its dependency-aware scheduler runs two targets
+concurrently only when their unbuilt import closures are disjoint, so shared
+dependencies are built once. The final job then assembles the headline
+theorem, checks its axioms, and packages the 15,050 project oleans. When the
+workflow is launched for an existing Release tag, a final least-privilege job
+attaches the archive, checksum, and provenance manifest to that Release.
+Maintainers first create the tag and draft Release, then run the workflow with
+both `source_ref` and `release_tag` set to that tag. Leaving `release_tag`
+empty performs the same verification but keeps the bundle as a 90-day
+workflow artifact instead of publishing it.
 
 The certificate-generation tools and exploratory search artifacts are not part
 of this release. The committed certificates are proof data: their validity is
