@@ -96,17 +96,19 @@ The full project takes roughly 140 CPU-hours. Individual certificate checks
 can peak near 6 GB of memory, and part of the final assembly can approach
 10 GB. An unrestricted parallel `lake build` may therefore exhaust memory.
 The manually dispatched CI workflow rebuilds all project modules from source
-against the pinned, prebuilt Mathlib cache, distributing the work across 29
-jobs. Within each job, its dependency-aware scheduler runs two targets
-concurrently only when their unbuilt import closures are disjoint, so shared
-dependencies are built once. The final job then assembles the headline
-theorem, checks its axioms, and packages the 15,050 project oleans. When the
-workflow is launched for an existing Release tag, a final least-privilege job
-attaches the archive, checksum, and provenance manifest to that Release.
-Maintainers first create the tag and draft Release, then run the workflow with
-both `source_ref` and `release_tag` set to that tag. Leaving `release_tag`
-empty performs the same verification but keeps the bundle as a 90-day
-workflow artifact instead of publishing it.
+against the pinned, prebuilt Mathlib cache. Its first stage uses twenty
+balanced jobs; a second eleven-job stage consumes those artifacts to build the
+independent dispatchers and side branches. Within each job, its
+dependency-aware scheduler runs two ordinary targets concurrently only when
+their unbuilt import closures are disjoint, while the memory-heavy dispatchers
+remain serial inside each runner. The final job assembles only the dependent
+tail, checks the headline theorem's axioms, and packages the 15,050 project
+oleans. When the workflow is launched for an existing Release tag, a final
+least-privilege job attaches the archive, checksum, and provenance manifest to
+that Release. Maintainers first create the tag and draft Release, then run the
+workflow with both `source_ref` and `release_tag` set to that tag. Leaving
+`release_tag` empty performs the same verification but keeps the bundle as a
+90-day workflow artifact instead of publishing it.
 
 The certificate-generation tools and exploratory search artifacts are not part
 of this release. The committed certificates are proof data: their validity is
