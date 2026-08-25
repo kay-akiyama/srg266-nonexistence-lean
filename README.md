@@ -93,12 +93,13 @@ it through the repository's **Cite this repository** action.
 ## LLM involvement
 
 This project is the result of LLM-led mathematical research and formalization.
-Kay Akiyama supplied the problem and the instruction to solve it; LLM agents
-carried out the mathematical exploration, proof design, Lean implementation,
-certificate construction, debugging, and documentation. The agents are not
-listed as authors. The formal result does not rely on trusting them: the
-complete proof term is checked by the Lean kernel, subject only to the three
-axioms listed above.
+Kay Akiyama supplied the problem and the instruction to solve it. The
+mathematical research was led mainly by GPT-5.6 Sol, with Claude Fable 5 used
+as a second-opinion and discussion partner. The Lean formalization was done
+mainly with Claude Opus 5 + Claude Code, with some parts developed using
+GPT-5.6 Sol + Codex. The agents are not listed as authors. The formal result
+does not rely on trusting them: the complete proof term is checked by the Lean
+kernel, subject only to the three axioms listed above.
 
 ## Licence
 
