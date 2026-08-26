@@ -175,10 +175,14 @@ jobs:
             exit 1
           fi
 
-      - name: Point lean at Mathlib, the base, and this fan-out
+      - name: Point lean at Mathlib, this fan-out, and the base
         run: |
           deps="$(ls -d .lake/packages/*/.lake/build/lib/lean | tr '\n' ':')"
-          echo "LEAN_PATH=${deps}.lake/base/lib/lean:.lake/fanout/lib/lean" >> "$GITHUB_ENV"
+          # Lake's dependency scan may leave `.ilean` files for modules whose
+          # `.olean` is not part of the base artifact.  Put the stage-local
+          # directory first so an olean produced here is not shadowed by such
+          # an incomplete entry in the merged base.
+          echo "LEAN_PATH=${deps}.lake/fanout/lib/lean:.lake/base/lib/lean" >> "$GITHUB_ENV"
 
       - name: Build this fan-out shard
         env:
