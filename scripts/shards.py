@@ -492,12 +492,25 @@ def build_direct(modules: Iterable[str], output_root: Path, parallel: int,
                 else:
                     failures.append(module)
             if failures:
+                # Stop scheduling and let the other process finish.  A runner
+                # can transiently exceed the memory budget when two large
+                # certificate checks overlap, so retry failures one at a time
+                # before declaring the artifact stage broken.
                 for future, module in list(running.items()):
-                    if future.result() != 0:
+                    if future.result() == 0:
+                        completed += 1
+                        print(f"done {module}", flush=True)
+                    else:
                         failures.append(module)
-                print("direct build failed: " + ", ".join(failures),
-                      file=sys.stderr, flush=True)
-                return 1
+                running.clear()
+                for module in failures:
+                    print(f"::warning::Retrying {module} serially", flush=True)
+                    if runner(module, output_root) != 0:
+                        print("direct build failed after serial retry: " + module,
+                              file=sys.stderr, flush=True)
+                        return 1
+                    completed += 1
+                    print(f"done {module} (serial retry)", flush=True)
 
     missing_outputs = [m for m in requested
                        if not olean_path(output_root, m).is_file()]

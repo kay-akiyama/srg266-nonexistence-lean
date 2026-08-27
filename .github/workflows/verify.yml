@@ -133,8 +133,11 @@ jobs:
 
       - name: Pack the oleans
         run: |
-          # The generated C is several GB and nothing downstream reads it.
+          # Downstream Lean only consumes oleans.  In particular, do not ship
+          # Lake's dependency-scan ileans: an ilean without its matching olean
+          # can shadow a module produced by the next artifact stage.
           rm -rf .lake/build/ir
+          find .lake/build/lib/lean/SRG266 -type f ! -name '*.olean' -delete
           tar -C .lake/build/lib/lean -c SRG266 | zstd -9 -T0 -o oleans.tar.zst
           ls -lh oleans.tar.zst
 
@@ -201,10 +204,9 @@ jobs:
       - name: Point lean at Mathlib, this fan-out, and the base
         run: |
           deps="$(ls -d .lake/packages/*/.lake/build/lib/lean | tr '\n' ':')"
-          # Lake's dependency scan may leave `.ilean` files for modules whose
-          # `.olean` is not part of the base artifact.  Put the stage-local
-          # directory first so an olean produced here is not shadowed by such
-          # an incomplete entry in the merged base.
+          # The base artifact is olean-only.  Keeping the stage-local directory
+          # first also makes a module produced here take precedence if an old
+          # or manually assembled base artifact contains stray metadata.
           echo "LEAN_PATH=${deps}.lake/fanout/lib/lean:.lake/base/lib/lean" >> "$GITHUB_ENV"
 
       - name: Build this fan-out shard
@@ -216,6 +218,7 @@ jobs:
 
       - name: Pack the fan-out oleans
         run: |
+          find .lake/fanout/lib/lean/SRG266 -type f ! -name '*.olean' -delete
           tar -C .lake/fanout/lib/lean -c SRG266 \
             | zstd -9 -T0 -o oleans.tar.zst
           ls -lh oleans.tar.zst
