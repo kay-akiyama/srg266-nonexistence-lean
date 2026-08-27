@@ -190,24 +190,24 @@ jobs:
         env:
           EXPECTED_BASE: ${{ needs.plan.outputs.base_count }}
         run: |
-          mkdir -p .lake/base/lib/lean
+          # Lean resolves a namespace through one search-path root; two roots
+          # that both contain `SRG266` shadow one another instead of merging.
+          # Build the fan-out in a single tree seeded with the base oleans.
+          mkdir -p .lake/fanout/lib/lean
           for archive in base-shards/*/oleans.tar.zst; do
-            zstd -dc "$archive" | tar -C .lake/base/lib/lean -x
+            zstd -dc "$archive" | tar -C .lake/fanout/lib/lean -x
             rm "$archive"
           done
-          count="$(find .lake/base/lib/lean/SRG266 -name '*.olean' | wc -l)"
+          count="$(find .lake/fanout/lib/lean/SRG266 -name '*.olean' | wc -l)"
           if [[ "$count" -ne "$EXPECTED_BASE" ]]; then
             echo "expected $EXPECTED_BASE base oleans, found $count" >&2
             exit 1
           fi
 
-      - name: Point lean at Mathlib, this fan-out, and the base
+      - name: Point lean at Mathlib and the seeded fan-out tree
         run: |
           deps="$(ls -d .lake/packages/*/.lake/build/lib/lean | tr '\n' ':')"
-          # The base artifact is olean-only.  Keeping the stage-local directory
-          # first also makes a module produced here take precedence if an old
-          # or manually assembled base artifact contains stray metadata.
-          echo "LEAN_PATH=${deps}.lake/fanout/lib/lean:.lake/base/lib/lean" >> "$GITHUB_ENV"
+          echo "LEAN_PATH=${deps}.lake/fanout/lib/lean" >> "$GITHUB_ENV"
 
       - name: Build this fan-out shard
         env:
@@ -218,8 +218,15 @@ jobs:
 
       - name: Pack the fan-out oleans
         run: |
-          find .lake/fanout/lib/lean/SRG266 -type f ! -name '*.olean' -delete
-          tar -C .lake/fanout/lib/lean -c SRG266 \
+          # The build tree also contains all base inputs.  Ship only the exact
+          # modules produced by this fan-out job so the final artifacts remain
+          # small and their union is the audited pre-tail partition.
+          python3 .ci-controller/scripts/shards.py targets fanout \
+            "${{ matrix.kind }}" "${{ matrix.shard }}" \
+            | while read -r module; do
+                printf '%s.olean\n' "${module//.//}"
+              done > fanout-files.txt
+          tar -C .lake/fanout/lib/lean -c -T fanout-files.txt \
             | zstd -9 -T0 -o oleans.tar.zst
           ls -lh oleans.tar.zst
 
