@@ -44,6 +44,10 @@ env:
   # are therefore built once rather than raced by independent Lake processes.
   LEAN_NUM_THREADS: '1'
   PARALLEL: '2'
+  # The workflow's planner is versioned independently of the source snapshot
+  # being verified.  This is essential for rebuilding an older Release tag:
+  # its historical shards.py does not know the current artifact pipeline.
+  SRG266_ROOT: ${{ github.workspace }}
 
 jobs:
   plan:
@@ -60,6 +64,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_ref }}
+      - name: Check out the planner from this workflow revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-controller
+          persist-credentials: false
       - id: source
         name: Freeze the source revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -78,14 +88,15 @@ jobs:
             exit 1
           fi
       - name: Audit the source snapshot
-        run: python3 scripts/shards.py audit
+        run: python3 .ci-controller/scripts/shards.py audit
       - id: plan
         run: |
-          echo "base_matrix=$(python3 scripts/shards.py matrix base)" >> "$GITHUB_OUTPUT"
-          echo "base_count=$(python3 scripts/shards.py count base)" >> "$GITHUB_OUTPUT"
-          echo "fanout_matrix=$(python3 scripts/shards.py matrix fanout)" >> "$GITHUB_OUTPUT"
-          echo "pretail_count=$(python3 scripts/shards.py count pretail)" >> "$GITHUB_OUTPUT"
-          echo "total_count=$(python3 scripts/shards.py count total)" >> "$GITHUB_OUTPUT"
+          planner=.ci-controller/scripts/shards.py
+          echo "base_matrix=$(python3 "$planner" matrix base)" >> "$GITHUB_OUTPUT"
+          echo "base_count=$(python3 "$planner" count base)" >> "$GITHUB_OUTPUT"
+          echo "fanout_matrix=$(python3 "$planner" matrix fanout)" >> "$GITHUB_OUTPUT"
+          echo "pretail_count=$(python3 "$planner" count pretail)" >> "$GITHUB_OUTPUT"
+          echo "total_count=$(python3 "$planner" count total)" >> "$GITHUB_OUTPUT"
 
   build:
     name: base ${{ matrix.label }}
@@ -101,6 +112,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+      - name: Check out the planner from this workflow revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-controller
+          persist-credentials: false
 
       - name: Install elan
         run: |
@@ -112,7 +129,7 @@ jobs:
         run: lake exe cache get
 
       - name: Build this shard
-        run: python3 scripts/shards.py build-base "${{ matrix.job }}"
+        run: python3 .ci-controller/scripts/shards.py build-base "${{ matrix.job }}"
 
       - name: Pack the oleans
         run: |
@@ -142,6 +159,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+      - name: Check out the planner from this workflow revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-controller
+          persist-credentials: false
 
       - name: Make room for the merged base
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -188,7 +211,7 @@ jobs:
         env:
           OLEAN_OUT: .lake/fanout/lib/lean
         run: >-
-          python3 scripts/shards.py build-direct fanout
+          python3 .ci-controller/scripts/shards.py build-direct fanout
           "${{ matrix.kind }}" "${{ matrix.shard }}"
 
       - name: Pack the fan-out oleans
@@ -214,6 +237,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+      - name: Check out the planner from this workflow revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-controller
+          persist-credentials: false
 
       - name: Make room for the merged build
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -270,7 +299,7 @@ jobs:
       - name: Assemble the final dependent tail
         env:
           OLEAN_OUT: .lake/build/lib/lean
-        run: python3 scripts/shards.py build-direct tail
+        run: python3 .ci-controller/scripts/shards.py build-direct tail
 
       - name: The theorem rests on exactly the three standard axioms
         run: |
@@ -291,7 +320,7 @@ jobs:
           PY
 
       - name: No compiled evaluation anywhere in the closure
-        run: python3 scripts/shards.py audit
+        run: python3 .ci-controller/scripts/shards.py audit
 
       - name: Package the verified olean closure
         env:

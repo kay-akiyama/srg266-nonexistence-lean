@@ -30,7 +30,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterable
 
-ROOT = Path(__file__).resolve().parents[1]
+# CI may verify an older tag whose copy of this planner predates the current
+# artifact pipeline.  In that case the workflow checks this script out at the
+# workflow revision and points it at the separately checked-out source tree.
+ROOT = Path(os.environ.get(
+    "SRG266_ROOT", Path(__file__).resolve().parents[1])).resolve()
 FINAL_MODULE = "SRG266.FractionalNearFrameMain"
 
 # The fine-grained slices from which the first CI stage is assembled.  Keeping
